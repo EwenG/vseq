@@ -1,59 +1,102 @@
-(ns ewen.vseq.core)
+(ns ewen.vseq.core
+  (:require [goog.dom :as dom]))
 
 
-(comment
 
-  (defn mount [root-node template renderer!]
-    {:key-map {}
+
+(defn mount [root-node key-fn template renderer!]
+  (let [children (dom/getChildren root-node)
+        key-map (loop [i (dec (aget children "length"))
+                       key-map (transient {})]
+                  (if (> i -1)
+                    (let [child (aget children i)
+                          k (.getAttribute child "data-vseq-id")]
+                      (assert (not (nil? k)) "key must not be null")
+                      (assert (not (contains? key-map k))
+                              "Dusplicate key")
+                      (recur (dec i) (assoc! key-map k child)))
+                    key-map))]
+    {:key-map (persistent! key-map)
+     :key-fn (comp str key-fn)
      :template template
-     :renderer! renderer!})
+     :renderer! renderer!}))
 
-  (defn dissoc-deleted-keys [key-map o-deleted]
-    (apply dissoc! key-map o-deleted))
+(defn basic-renderer [root patch-ops]
+  (doseq [[op & args] patch-ops]
+    (case op
+      :insert-node-first (dom/insertChildAt root (first args) 0)
+      :insert-node-after (dom/insertSiblingAfter (second args)
+                                                 (first args))
+      :move-node-first (dom/insertChildAt root (first args) 0)
+      :move-node-after (dom/insertSiblingAfter (second args)
+                                               (first args))
+      :delete-node (dom/removeNode (first args)))))
 
-  (defn add-deleted-patch-ops [patch-ops key-map o-deleted]
-    (->> (keep (fn [k]
-                 (when-let [k (get key-map k)]
-                   [:delete-node k]))
-               o-deleted)
-         (reduce conj! patch-ops)))
+(defn dissoc-deleted-keys [key-map o-deleted]
+  (apply (partial dissoc! key-map) o-deleted))
 
-  (defn add-o-moved-patch-op [patch-ops last-o-item o-item]
-    (conj! patch-ops [:move-node-after last-o-item o-item]))
+(defn add-deleted-patch-ops [patch-ops key-map o-deleted]
+  (->> (keep (fn [k]
+               (when-let [node (get key-map k)]
+                 [:delete-node node]))
+             o-deleted)
+       (reduce conj! patch-ops)))
 
-  (defn add-n-insert-patch-op [patch-ops last-o-item n-item]
-    (if last-o-item
-      (conj! patch-ops [:insert-node-after last-o-item n-item])
-      (conj! patch-ops [:insert-node-first n-item])))
+(defn add-o-moved-patch-op [patch-ops last-o-item o-item]
+  (if last-o-item
+    (conj! patch-ops [:move-node-after last-o-item o-item])
+    (conj! patch-ops [:move-node-first o-item])))
 
-  (defn patch! [vseq o-seq n-seq k-fn tmpl]
-    (loop [key-map (transient (:key-map vseq))
-           o-seq o-seq
-           n-seq n-seq
-           patch-ops (transient #{})
-           o-moved (transient #{})
-           o-deleted (transient #{})
-           last-o-key nil]
-      (let [o-item (first n-seq)
-            n-item (first n-seq)]
-        (if (and (nil? o-item) (nil? n-item))
+(defn deleted-to-moved-patch-op [patch-ops last-o-item o-item]
+  (-> (disj! patch-ops [:delete-node o-item])
+      (conj! [:move-node-after last-o-item o-item])))
+
+(defn add-n-insert-patch-op [patch-ops last-o-item n-item]
+  (if last-o-item
+    (conj! patch-ops [:insert-node-after last-o-item n-item])
+    (conj! patch-ops [:insert-node-first n-item])))
+
+(defn make-node [template item key]
+  (doto (template item) (.setAttribute "data-vseq-id" (str key))))
+
+(defn patch! [{:keys [key-map key-fn template renderer!] :as vseq}
+              o-seq n-seq]
+  (loop [key-map (transient key-map)
+         o-seq o-seq
+         n-seq n-seq
+         patch-ops (transient #{})
+         o-moved (transient #{})
+         o-deleted (transient #{})
+         last-o-key nil]
+    (let [o-item (first o-seq)
+          n-item (first n-seq)]
+      (if (and (nil? o-item) (nil? n-item))
+        (let [o-deleted (persistent! o-deleted)
+              renderer! (partial renderer! root)]
           (-> (add-deleted-patch-ops
-               patch-ops key-map
-               (persistent! o-deleted))
-              persistent! ((:renderer! vseq)))
-          {:key-map (-> (dissoc-deleted-keys key-map o-deleted)
-                        persistent!)
-           :template (:template vseq)
-           :renderer! (:renderer! vseq)}
-          (let [n-key (k-fn n-item)
-                o-key (k-fn o-item)]
-            (when (= n-key o-key)
-              (recur key-map (rest o-seq) (rest n-seq)
-                     patch-ops o-moved o-deleted o-key))
+               patch-ops key-map o-deleted)
+              persistent! renderer!)
+          (assoc vseq :key-map
+                 (-> (dissoc-deleted-keys key-map o-deleted) persistent!)))
+        (let [o-key (key-fn o-item)
+              n-key (key-fn n-item)]
+          (if (= o-key n-key)
+            (recur key-map (rest o-seq) (rest n-seq)
+                   patch-ops o-moved o-deleted o-key)
             (cond (and (not (nil? o-item))
                        (not (nil? n-item)))
-                  (cond (get key-map n-key)
-                        ;; The o-item has been moved backward
+                  (cond (get o-deleted n-key)
+                        ;; The o-item has been marked as deleted.
+                        ;; However, it should not be deleted but it
+                        ;; should be moved instead.
+                        (recur key-map o-seq (rest n-seq)
+                               (deleted-to-moved-patch-op
+                                patch-ops (get key-map last-o-key)
+                                (get key-map n-key))
+                               (conj! o-moved n-key)
+                               (disj! o-deleted n-key) n-key)
+                        (get key-map n-key)
+                        ;; Move o-item backward
                         (recur key-map o-seq (rest n-seq)
                                (add-o-moved-patch-op
                                 patch-ops (get key-map last-o-key)
@@ -65,22 +108,12 @@
                         ;; (moved backward)
                         (recur key-map (rest o-seq) n-seq patch-ops
                                o-moved o-deleted last-o-key)
-                        (get o-deleted n-key)
-                        ;; The o-item has been marked as deleted.
-                        ;; However, it should not be deleted but it
-                        ;; should be moved instead.
-                        (recur key-map o-seq (rest n-seq)
-                               (add-o-moved-patch-op
-                                patch-ops (get key-map last-o-key)
-                                (get key-map n-key))
-                               (conj! o-moved n-key)
-                               (disj! o-deleted n-key) n-key)
                         :else
                         ;; Items are not null, keys don't match and all
                         ;; special cases have been handled.
                         ;; Mark the old node has deleted + insert the
                         ;; new-node at the current position.
-                        (let [n-node ((:template vseq) n-item)]
+                        (let [n-node (make-node template n-item n-key)]
                           (recur (assoc! key-map n-key n-node)
                                  (rest o-seq) (rest n-seq)
                                  (add-n-insert-patch-op
@@ -98,7 +131,18 @@
                     (recur key-map (rest o-seq) (rest n-seq) patch-ops
                            o-moved (conj! o-deleted o-key) last-o-key))
                   (nil? o-item)
-                  (cond (get key-map n-key)
+                  (cond (get o-deleted n-key)
+                        ;; The o-item has been marked as deleted.
+                        ;; However, it should not be deleted but it
+                        ;; should be moved instead.
+                        ;; The fact that o-item is nil is not relevant here.
+                        (recur key-map o-seq (rest n-seq)
+                               (deleted-to-moved-patch-op
+                                patch-ops (get key-map last-o-key)
+                                (get key-map n-key))
+                               (conj! o-moved n-key)
+                               (disj! o-deleted n-key) n-key)
+                        (get key-map n-key)
                         ;; A o-item has been moved backward.
                         ;; The fact that o-item is nil is not relevant here.
                         (recur key-map o-seq (rest n-seq)
@@ -107,35 +151,54 @@
                                 (get key-map n-key))
                                (conj! o-moved n-key)
                                o-deleted n-key)
-                        (get o-deleted n-key)
-                        ;; The o-item has been marked as deleted.
-                        ;; However, it should not be deleted but it
-                        ;; should be moved instead.
-                        ;; The fact that o-item is nil is not relevant here.
-                        (recur key-map o-seq (rest n-seq)
-                               (add-o-moved-patch-op
-                                patch-ops (get key-map last-o-key)
-                                (get key-map n-key))
-                               (conj! o-moved n-key)
-                               (disj! o-deleted n-key) n-key)
                         :else
                         ;; o-item is nil and all special cases have been
                         ;; handled. Insert the new node at the current
                         ;; position.
-                        (let [n-node ((:template vseq) n-item)]
+                        (let [n-node (make-node template n-item n-key)]
                           (recur (assoc! key-map n-key n-node)
                                  (rest o-seq) (rest n-seq)
                                  (add-n-insert-patch-op
                                   patch-ops (get key-map last-o-key) n-node)
                                  o-moved o-deleted n-key)))
-                  :else (throw (js/Error. "Illegal state"))))))))
+                  :else (throw (js/Error. "Illegal state")))))))))
 
-  ;; 1 2   3
-  ;; 2 nil 3
+;; 1 2   3
+;; 2 nil 3
 
-  ;; 1 2 3 4 5
-  ;; 1 3 2 4 5
+;; 1 2 3 4 5
+;; 1 3 2 4 5
 
-  ;; 1 2 3   4
-  ;; 2 3 nil 1
-)
+;; 1 2 3   4
+;; 2 3 nil 1
+
+
+(comment
+  (require '[goog.dom :as dom])
+
+  (def root (dom/createDom "div" #js {:id "root"}))
+  (dom/appendChild js/document.body root)
+
+  (defn template [[tag attrs]]
+    (dom/createDom (name tag) (clj->js attrs)))
+
+  (dom/appendChild root (template [:div {:data-vseq-id 1}]))
+  (dom/appendChild root (template [:div {:data-vseq-id 3}]))
+
+  (let [vseq (mount root
+                    (fn [x] (:data-vseq-id (second x)))
+                    template basic-renderer)]
+    (-> (patch! vseq
+                [[:div {:data-vseq-id 1}] [:div {:data-vseq-id 3}]]
+                [[:div {:data-vseq-id 3}] [:div {:data-vseq-id 2}] [:div {:data-vseq-id 1}]])
+        :key-map))
+
+  (let [vseq (mount root
+                    (fn [x] (:data-vseq-id (second x)))
+                    template basic-renderer)]
+    (-> (patch! vseq
+                [[:div {:data-vseq-id 1}] [:div {:data-vseq-id 3}]]
+                [[:div {:data-vseq-id 3}] [:div {:data-vseq-id 4}] [:div {:data-vseq-id 5}] [:div {:data-vseq-id 1}] [:div {:data-vseq-id 7}]])
+        :key-map))
+
+  )
