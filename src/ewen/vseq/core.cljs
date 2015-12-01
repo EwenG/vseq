@@ -16,21 +16,29 @@
                               "Dusplicate key")
                       (recur (dec i) (assoc! key-map k child)))
                     key-map))]
-    {:key-map (persistent! key-map)
+    {:root root-node
+     :key-map (persistent! key-map)
      :key-fn (comp str key-fn)
      :template template
      :renderer! renderer!}))
 
 (defn basic-renderer [root patch-ops]
+  (doseq [[op n1 n2] patch-ops]
+    #_(if (and n1 n2)
+      (prn [op (.getAttribute n1 "data-vseq-id") (.getAttribute n2 "data-vseq-id")])
+      (when n1
+        (prn [op (.getAttribute n1 "data-vseq-id")]))))
   (doseq [[op & args] patch-ops]
     (case op
       :insert-node-first (dom/insertChildAt root (first args) 0)
-      :insert-node-after (dom/insertSiblingAfter (second args)
-                                                 (first args))
+      :insert-node-after (when (first args)
+                           (dom/insertSiblingAfter (second args)
+                                                   (first args)))
       :move-node-first (dom/insertChildAt root (first args) 0)
-      :move-node-after (dom/insertSiblingAfter (second args)
-                                               (first args))
-      :delete-node (dom/removeNode (first args)))))
+      :move-node-after (when (first args)
+                         (dom/insertSiblingAfter (second args)
+                                                 (first args)))
+      :delete-node  (dom/removeNode (first args)))))
 
 (defn dissoc-deleted-keys [key-map o-deleted]
   (apply (partial dissoc! key-map) o-deleted))
@@ -48,8 +56,7 @@
     (conj! patch-ops [:move-node-first o-item])))
 
 (defn deleted-to-moved-patch-op [patch-ops last-o-item o-item]
-  (-> (disj! patch-ops [:delete-node o-item])
-      (conj! [:move-node-after last-o-item o-item])))
+  (conj! patch-ops [:move-node-after last-o-item o-item]))
 
 (defn add-n-insert-patch-op [patch-ops last-o-item n-item]
   (if last-o-item
@@ -59,12 +66,12 @@
 (defn make-node [template item key]
   (doto (template item) (.setAttribute "data-vseq-id" (str key))))
 
-(defn patch! [{:keys [key-map key-fn template renderer!] :as vseq}
+(defn patch! [{:keys [root key-map key-fn template renderer!] :as vseq}
               o-seq n-seq]
   (loop [key-map (transient key-map)
          o-seq o-seq
          n-seq n-seq
-         patch-ops (transient #{})
+         patch-ops (transient [])
          o-moved (transient #{})
          o-deleted (transient #{})
          last-o-key nil]
@@ -162,16 +169,6 @@
                                   patch-ops (get key-map last-o-key) n-node)
                                  o-moved o-deleted n-key)))
                   :else (throw (js/Error. "Illegal state")))))))))
-
-;; 1 2   3
-;; 2 nil 3
-
-;; 1 2 3 4 5
-;; 1 3 2 4 5
-
-;; 1 2 3   4
-;; 2 3 nil 1
-
 
 (comment
   (require '[goog.dom :as dom])
