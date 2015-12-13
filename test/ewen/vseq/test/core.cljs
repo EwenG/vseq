@@ -21,9 +21,8 @@
                   (if (> i -1)
                     (let [child (aget children i)
                           k (.getAttribute child "data-vseq-id")]
-                      (assert (not (nil? k)) "key must not be null")
                       (assert (not (contains? key-map k))
-                              "Dusplicate key")
+                              "Duplicate keys")
                       (recur (dec i) (conj! key-map k)))
                     key-map))]
     (into '() (persistent! key-map))))

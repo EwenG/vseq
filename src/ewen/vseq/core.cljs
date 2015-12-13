@@ -8,10 +8,11 @@
                   (if (> i -1)
                     (let [child (aget children i)
                           k (.getAttribute child "data-vseq-id")]
-                      (assert (not (nil? k)) "key must not be null")
                       (assert (not (contains? key-map k))
-                              "Dusplicate key")
-                      (recur (dec i) (assoc! key-map k child)))
+                              "Duplicate keys")
+                      (recur (dec i) (if k
+                                       (assoc! key-map k child)
+                                       key-map)))
                     key-map))]
     (aset root-node ::vseq {:key-map (persistent! key-map)
                             :key-fn (comp str key-fn)
