@@ -43,7 +43,7 @@
                                     (fn [x] (:data-vseq-id (second x)))
                                     template basic-renderer)
                         o-key-map (:key-map vseq)
-                        vseq (patch! vseq o-vnodes n-vnodes)
+                        vseq (patch! root o-vnodes n-vnodes)
                         n-key-map (:key-map vseq)
                         read-key-map (read-keys root)]
                     (and (= (-> o-key-map keys set)
